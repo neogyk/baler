@@ -20,6 +20,8 @@ import numpy as np
 
 from .modules import helper
 import gzip
+from .modules.profiling import energy_profiling
+from .modules.profiling import pytorch_profile
 
 __all__ = (
     "perform_compression",
@@ -73,6 +75,8 @@ def main():
         )
 
 
+@energy_profiling(project_name='training', measure_power_secs=1)
+@pytorch_profile
 def perform_training(output_path, config, verbose: bool):
     """Main function calling the training functions, ran when --mode=train is selected.
         The three functions called are: `helper.process`, `helper.mode_init` and `helper.training`.
