@@ -19,6 +19,9 @@ from math import ceil
 import numpy as np
 
 from .modules import helper
+from .modules.profiling import pytorch_profile
+from .modules.profiling import energy_profiling
+
 import gzip
 from .modules.profiling import energy_profiling
 from .modules.profiling import pytorch_profile
@@ -75,8 +78,13 @@ def main():
         )
 
 
+<<<<<<< HEAD
 @energy_profiling(project_name='training', measure_power_secs=1)
 @pytorch_profile
+=======
+@pytorch_profile
+@energy_profiling(project_name='training', measure_power_secs=1, config=config)
+>>>>>>> 3d671de (Added profilers and electricity meters)
 def perform_training(output_path, config, verbose: bool):
     """Main function calling the training functions, ran when --mode=train is selected.
         The three functions called are: `helper.process`, `helper.mode_init` and `helper.training`.

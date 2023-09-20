@@ -127,6 +127,7 @@ def seed_worker(worker_id):
     random.seed(worker_seed)
 
 
+@pytorch_profile
 def train(model, variables, train_data, test_data, project_path, config):
     """Does the entire training loop by calling the `fit()` and `validate()`. Appart from this, this is the main function where the data is converted
         to the correct type for it to be trained, via `torch.Tensor()`. Furthermore, the batching is also done here, based on `config.batch_size`,
