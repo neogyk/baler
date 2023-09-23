@@ -19,8 +19,6 @@ from math import ceil
 import numpy as np
 
 from .modules import helper
-from .modules.profiling import pytorch_profile
-from .modules.profiling import energy_profiling
 
 import gzip
 from .modules.profiling import energy_profiling
@@ -78,13 +76,8 @@ def main():
         )
 
 
-<<<<<<< HEAD
-@energy_profiling(project_name='training', measure_power_secs=1)
 @pytorch_profile
-=======
-@pytorch_profile
-@energy_profiling(project_name='training', measure_power_secs=1, config=config)
->>>>>>> 3d671de (Added profilers and electricity meters)
+@energy_profiling(project_name='baler_training', measure_power_secs=1)
 def perform_training(output_path, config, verbose: bool):
     """Main function calling the training functions, ran when --mode=train is selected.
         The three functions called are: `helper.process`, `helper.mode_init` and `helper.training`.
@@ -433,5 +426,3 @@ def print_info(output_path, config):
         f"Combined, the actual compression ratio is: {round((file_stats[0])/(file_stats[1] + sum(meta_data_stats)),4)}"
     )
     print("\n ==================================")
-
-    ## TODO: Add way to print how much your data has been distorted
