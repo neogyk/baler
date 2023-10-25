@@ -30,7 +30,7 @@ def set_config(c):
     c.error_bounded_requirement = 1
     c.convert_to_blocks = False
     # c.custom_loss_function = "loss_function_swae"
-
+    c.precision = "32-true"
 
 # def set_config(c):
 #     c.input_path = "workspaces/CFD_workspace/data/CFDAnimation.npz"

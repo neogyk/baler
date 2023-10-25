@@ -25,6 +25,7 @@ from ..modules import diagnostics
 from ..modules import helper
 from ..modules import utils
 from torch.nn import functional as F
+from lightning.fabric import Fabric
 
 
 def fit(
@@ -38,6 +39,7 @@ def fit(
     RHO,
     l1,
     n_dimensions,
+    fabric,
 ):
     """This function trains the model on the train set. It computes the losses and does the backwards propagation, and updates the optimizer as well.
     Args:
@@ -49,6 +51,7 @@ def fit(
         RHO (float): Float used for KL Divergence (Not currently a feature)
         l1 (boolean): If `True`, use L1 regularization. Otherwise, don't.
         n_dimensions (int): Number of dimensions.
+        fabric (lightning.Fabric): 
     Returns:
         list, model object: Training loss and trained model
     """
@@ -58,37 +61,37 @@ def fit(
     model.train()
 
     running_loss = 0.0
-    device = helper.get_device()
 
     for idx, inputs in enumerate(tqdm(train_dl)):
-        inputs = inputs.to(device)
+        inputs = inputs.to(fabric.device)
 
         # Set the gradients to zero
         optimizer.zero_grad()
+        with fabric.autocast():
 
-        # Compute the predicted outputs from the input data
-        reconstructions = model(inputs)
+            # Compute the predicted outputs from the input data
+            reconstructions = model(inputs)
 
-        if (
-            hasattr(config, "custom_loss_function")
-            and config.custom_loss_function == "loss_function_swae"
-        ):
-            z = model.encode(inputs)
-            loss, mse_loss, l1_loss = utils.loss_function_swae(
-                inputs, z, reconstructions, latent_dim
-            )
-        else:
-            # Compute how far off the prediction is
-            loss, mse_loss, l1_loss = utils.mse_sum_loss_l1(
-                model_children=model_children,
-                true_data=inputs,
-                reconstructed_data=reconstructions,
-                reg_param=regular_param,
-                validate=True,
-            )
+            if (
+                hasattr(config, "custom_loss_function")
+                and config.custom_loss_function == "loss_function_swae"
+            ):
+                z = model.encode(inputs)
+                loss, mse_loss, l1_loss = utils.loss_function_swae(
+                    inputs, z, reconstructions, latent_dim
+                )
+            else:
+                # Compute how far off the prediction is
+                loss, mse_loss, l1_loss = utils.mse_sum_loss_l1(
+                    model_children=model_children,
+                    true_data=inputs,
+                    reconstructed_data=reconstructions,
+                    reg_param=regular_param,
+                    validate=True,
+                )
 
         # Compute the loss-gradient with
-        loss.backward()
+        fabric.backward(loss)
 
         # Update the optimizer
         optimizer.step()
@@ -182,7 +185,8 @@ def train(model, variables, train_data, test_data, project_path, config):
     latent_space_size = config.latent_space_size
     intermittent_model_saving = config.intermittent_model_saving
     intermittent_saving_patience = config.intermittent_saving_patience
-
+    precision = config.precision if hasattr(config, "precision") else "32"
+    
     model_children = list(model.children())
 
     # Initialize model with appropriate device
@@ -261,6 +265,12 @@ def train(model, variables, train_data, test_data, project_path, config):
     # Select Optimizer
     optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
 
+    # Define Fabric
+    fabric = Fabric(accelerator=device.type, precision=precision)
+    fabric.launch()
+    model, optimizer = fabric.setup(model, optimizer)
+    train_dl, valid_dl = fabric.setup_dataloaders(train_dl, valid_dl)
+    
     # Activate early stopping
     if config.early_stopping:
         early_stopping = utils.EarlyStopping(

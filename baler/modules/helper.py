@@ -183,6 +183,7 @@ class Config:
     emd: bool
     l1: bool
     deterministic_algorithm: bool
+    precision: str
 
 
 def create_default_config(workspace_name: str, project_name: str) -> str:
@@ -209,6 +210,7 @@ def set_config(c):
     c.batch_size                   = 512
     c.early_stopping               = True
     c.lr_scheduler                 = True
+    c.precision                    = "32-true"
 
 
 
