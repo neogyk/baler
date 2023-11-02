@@ -306,6 +306,7 @@ def train(model, variables, train_data, test_data, project_path, config):
             RHO=rho,
             l1=l1,
             n_dimensions=config.data_dimension,
+            fabric=fabric,
         )
         train_loss.append(train_epoch_loss)
 
