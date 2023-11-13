@@ -14,7 +14,7 @@ def set_config(c):
     c.lr_scheduler = True
     c.save_error_bounded_deltas = False
     c.error_bounded_requirement = 10
-    c.precision = "16-mixed"
+    c.precision = "32-true"
 
     # === Additional configuration options ===
 
