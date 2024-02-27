@@ -13,6 +13,7 @@ import baler_compressor.helper as helper
 import baler_compressor.utils as utils
 import baler_compressor.data_processing as data_processing
 
+import lightning as L
 
 def run(data_path, config):
     """Main function calling the training functions, ran when --mode=train is selected.
@@ -96,6 +97,7 @@ def run(data_path, config):
     # model_object = helper.model_init(config.model_name)
     model = config.model(n_features, config.latent_space_size)
     model.to(device)
+    #Fabric lightning;
 
     # if config.model_name == "Conv_AE_3D" and hasattr(
     #    config, "compress_to_latent_space"
@@ -148,6 +150,7 @@ def fit(
     model_children,
     regular_param,
     optimizer,
+    fabric,
     latent_dim,
     RHO,
     l1,
@@ -202,7 +205,7 @@ def fit(
             )
 
         # Compute the loss-gradient with
-        loss.backward()
+        fabric.backward(loss)
 
         # Update the optimizer
         optimizer.step()
@@ -377,7 +380,11 @@ def train(model, variables, train_data, test_data, config):
 
     # Select Optimizer
     optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
-
+    fabric = L.Fabric(accelerator="auto", devices="auto", strategy="auto", precision="32-true")
+    model, optimizer = fabric.setup(model, optimizer)
+    train_dl, valid_dl = fabric.setup_dataloaders(train_dl, valid_dl)
+    
+    
     # Activate early stopping
     if config.early_stopping:
         early_stopping = utils.EarlyStopping(
@@ -414,6 +421,7 @@ def train(model, variables, train_data, test_data, config):
             model_children=model_children,
             regular_param=reg_param,
             optimizer=optimizer,
+            fabric=fabric,
             latent_dim=latent_space_size,
             RHO=rho,
             l1=l1,
