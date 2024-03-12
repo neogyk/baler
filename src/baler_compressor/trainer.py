@@ -13,7 +13,14 @@ import baler_compressor.helper as helper
 import baler_compressor.utils as utils
 import baler_compressor.data_processing as data_processing
 
+import datetime
+
 import lightning as L
+from rich.console import Console
+from rich.table import Table
+from pytorch_lightning.trainer.trainer import Trainer
+from lightning.pytorch.core import LightningModule
+import lsuv 
 
 def run(data_path, config):
     """Main function calling the training functions, ran when --mode=train is selected.
@@ -95,9 +102,10 @@ def run(data_path, config):
 
     # model_object = config.model
     # model_object = helper.model_init(config.model_name)
-    model = config.model(n_features, config.latent_space_size)
+    model = config.model(in_dim=806,
+                         latent_size=50,
+                         n_heads=13)
     model.to(device)
-    #Fabric lightning;
 
     # if config.model_name == "Conv_AE_3D" and hasattr(
     #    config, "compress_to_latent_space"
@@ -122,6 +130,32 @@ def run(data_path, config):
 
     if verbose:
         print("Training complete")
+
+    model_parameters = filter(lambda p: p.requires_grad, model.parameters())
+    params = sum([np.prod(p.size()) for p in model_parameters])
+    
+    #Get the Rate and distortion values;
+    
+    console = Console()
+
+    table = Table(show_header=True, header_style="bold magenta")
+    table.add_column("Date", style="dim", width=12)
+    table.add_column("Title")
+    table.add_column("HP", justify="right")
+    table.add_column("Loss [Train/Validation] Score", justify="right")
+    table.add_column("Distortion-Rate", justify="right")
+    table.add_column("Number of parameters", justify="right")
+  
+    table.add_row(
+        "{0}".format(datetime.datetime.now()),
+        f"{config.model_type}",
+        f"lr: {config.lr}, bs: {config.batch_size}, optimizer: AdamW",#TODO fix it
+        f"[bold]{loss_data[-1][0][-1]},{loss_data[-1][-1][-1]}[/bold]",
+        "[bold]distortion rate[/bold]",
+        f"[bold] {params}[/bold]"
+    )
+
+    console.print(table)
 
     return trained_model, normalization_features, loss_data
 
@@ -184,7 +218,7 @@ def fit(
         optimizer.zero_grad()
 
         # Compute the predicted outputs from the input data
-        reconstructions = model(inputs)
+        reconstructions = model(inputs.clone())
 
         if (
             hasattr(config, "custom_loss_function")
@@ -201,9 +235,9 @@ def fit(
                 true_data=inputs,
                 reconstructed_data=reconstructions,
                 reg_param=regular_param,
-                validate=True,
+                validate=False,
             )
-
+        torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=0.1)
         # Compute the loss-gradient with
         fabric.backward(loss)
 
@@ -211,7 +245,6 @@ def fit(
         optimizer.step()
 
         running_loss += loss.item()
-
     epoch_loss = running_loss / (idx + 1)
     print(f"# Finished. Training Loss: {loss:.6f}")
     return epoch_loss, mse_loss, l1_loss, model
@@ -237,7 +270,7 @@ def validate(model, test_dl, model_children, reg_param):
     with torch.no_grad():
         for idx, inputs in enumerate(tqdm(test_dl)):
             inputs = inputs.to(device)
-            reconstructions = model(inputs)
+            reconstructions = model(inputs.detach().clone())
 
             loss, _, _ = utils.mse_sum_loss_l1(
                 model_children=model_children,
@@ -346,6 +379,7 @@ def train(model, variables, train_data, test_data, config):
         train_ds = torch.tensor(train_data, dtype=torch.float64, device=device)
         valid_ds = torch.tensor(test_data, dtype=torch.float64, device=device)
 
+
     # Pushing input data into the torch-DataLoader object and combines into one DataLoader object (a basic wrapper
     # around several DataLoader objects).
 
@@ -356,14 +390,14 @@ def train(model, variables, train_data, test_data, config):
             shuffle=False,
             worker_init_fn=seed_worker,
             generator=g,
-            drop_last=False,
+            drop_last=True,
         )
         valid_dl = DataLoader(
             valid_ds,
             batch_size=bs,
             worker_init_fn=seed_worker,
             generator=g,
-            drop_last=False,
+            drop_last=True,
         )
     else:
         train_dl = DataLoader(
@@ -379,11 +413,48 @@ def train(model, variables, train_data, test_data, config):
         )
 
     # Select Optimizer
-    optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
-    fabric = L.Fabric(accelerator="auto", devices="auto", strategy="auto", precision="32-true")
+    model = model.double()
+    model = lsuv.lsuv_with_dataloader(model, train_dl)
+
+    optimizer = torch.optim.AdamW(model.parameters(), lr=learning_rate)
+    
+    swa_scheduler = torch.optim.swa_utils.SWALR(
+        optimizer, anneal_strategy="cos", anneal_epochs=10, swa_lr=0.0005)
+
+    swa_model = torch.optim.swa_utils.AveragedModel(model)
+    
+    """
+    class LitModel(LightningModule):
+
+        def __init__(self, learning_rate, model):
+            super().__init__()
+            self. learning_rate = learning_rate
+            self.model = model
+            self.loss_fn = utils.mse_sum_loss_l1
+            
+        def training_step(self, batch):
+            out = self.model(batch)
+            loss = self.loss(out, batch)
+            return loss
+        
+        def configure_optimizers(self, optimizer):
+            return optimizer
+        
+    lt_model = LitModel(learning_rate, model)
+    trainer = Trainer()
+    lr_finder = trainer.tuner.lr_find(lt_model)
+    print("lr_finder.results", lr_finder.results)
+    new_lr = lr_finder.suggestion()
+    print("new_lr", new_lr)
+    """
+    
+    fabric = L.Fabric(accelerator="auto", devices="auto", strategy="auto", precision="64")
     model, optimizer = fabric.setup(model, optimizer)
     train_dl, valid_dl = fabric.setup_dataloaders(train_dl, valid_dl)
     
+
+    #TODO set the lr for the optimizer;
+
     
     # Activate early stopping
     if config.early_stopping:
@@ -405,7 +476,7 @@ def train(model, variables, train_data, test_data, config):
     # Registering hooks for activation extraction
     # if config.activation_extraction:
     #    hooks = model.store_hooks()
-
+    swa_start = 10
     for epoch in range(epochs):
         print(f"Epoch {epoch + 1} of {epochs}")
 
@@ -447,6 +518,10 @@ def train(model, variables, train_data, test_data, config):
             early_stopping(val_epoch_loss)
             if early_stopping.early_stop:
                 break
+        
+        if epoch > swa_start:
+            swa_model.update_parameters(model)
+            swa_scheduler.step()
 
         ### Implementation to save models & values after every N epochs, where N is stored in 'intermittent_saving_patience':
         # if intermittent_model_saving:
@@ -454,19 +529,16 @@ def train(model, variables, train_data, test_data, config):
         #        path = os.path.join(project_path, f"model_{epoch}.pt")
         #        helper.model_saver(model, path)
 
-    end = time.time()
-
     # Saving activations values
     # if config.activation_extraction:
     #    activations = diagnostics.dict_to_square_matrix(model.get_activations())
     #    model.detach_hooks(hooks)
     #    np.save(os.path.join(project_path, "activations.npy"), activations)
-
-    print(f"Training took: {(end - start) / 60:.3} minutes")
-    # np.save(
-    #    os.path.join(config.output_path, "loss_data.npy"),
-    #    np.array([train_loss, val_loss]),
-    # )
+    print(f"Training took: {(time.time() - start) / 60:.3} minutes")
+    np.save(
+        os.path.join(config.output_path, "loss_data.npy"),
+        np.array([train_loss, val_loss]),
+     )
     loss_data = (np.array([train_loss, val_loss]),)
 
     if config.model_type == "convolutional":
@@ -475,5 +547,6 @@ def train(model, variables, train_data, test_data, config):
             os.path.join("output/compressed_output/", "final_layer.npy"),
             np.array(final_layer),
         )
-
+    trained_model = swa_model
+    print(loss_data[-1][-1])
     return trained_model, loss_data
