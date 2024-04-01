@@ -92,11 +92,20 @@ def get_arguments():
         config = Config
         importlib.import_module(config_path).set_config(config)
 
-    return config, args.mode, workspace_name, project_name, args.verbose
+    return (
+        config,
+        args.mode,
+        workspace_name,
+        project_name,
+        args.verbose,
+    )
 
 
 def create_new_project(
-    workspace_name: str, project_name: str, verbose: bool = False
+    workspace_name: str,
+    project_name: str,
+    verbose: bool = False,
+    base_path: str = "workspaces",
 ) -> None:
     """Creates a new project directory output subdirectories and config files within a workspace.
 
@@ -105,8 +114,6 @@ def create_new_project(
         project_name (str): Creates a project (dir) for storing configs and outputs with this name.
         verbose (bool, optional): Whether to print out the progress. Defaults to False.
     """
-
-    base_path = "workspaces"
 
     # Create full project path
     workspace_path = os.path.join(base_path, workspace_name)
@@ -265,7 +272,14 @@ def normalize(data, custom_norm):
     return data
 
 
-def process(input_path, custom_norm, test_size, apply_normalization):
+def process(
+    input_path,
+    custom_norm,
+    test_size,
+    apply_normalization,
+    convert_to_blocks,
+    verbose,
+):
     """Loads the input data into a ndarray, splits it into train/test splits and normalizes if chosen.
 
     Args:
@@ -280,6 +294,14 @@ def process(input_path, custom_norm, test_size, apply_normalization):
     loaded = np.load(input_path)
     data = loaded["data"]
 
+    if verbose:
+        print("Original Dataset Shape - ", data.shape)
+
+    original_shape = data.shape
+
+    if convert_to_blocks:
+        data = data_processing.convert_to_blocks_util(convert_to_blocks, data)
+
     normalization_features = data_processing.find_minmax(data)
     if apply_normalization:
         print("Normalizing the data...")
@@ -292,11 +314,7 @@ def process(input_path, custom_norm, test_size, apply_normalization):
             data, test_size=test_size, random_state=1
         )
 
-    return (
-        train_set,
-        test_set,
-        normalization_features,
-    )
+    return (train_set, test_set, normalization_features, original_shape)
 
 
 def renormalize(data, true_min_list, feature_range_list):
@@ -371,6 +389,23 @@ def model_saver(model, model_path):
         .pt file: `.pt` File containing the model state dictionary
     """
     return data_processing.save_model(model, model_path)
+
+
+def encoder_decoder_saver(model, encoder_path, decoder_path):
+    """Calls `data_processing.encoder_saver` and `data_processing.decoder_saver`
+
+    Args:
+        model (nn.Module): The PyTorch model to save.
+        model_path (str): String defining the models save path.
+
+    Returns:
+        .pt file: `.pt` File containing the encoder state dictionary
+        .pt file: `.pt` File containing the decoder state dictionary
+
+    """
+    return data_processing.encoder_saver(
+        model, encoder_path
+    ), data_processing.decoder_saver(model, decoder_path)
 
 
 def detacher(tensor):
@@ -453,6 +488,13 @@ def compress(model_path, config):
     # Loads the data and applies normalization if config.apply_normalization = True
     loaded = np.load(config.input_path)
     data_before = loaded["data"]
+    original_shape = data_before.shape
+
+    if hasattr(config, "convert_to_blocks") and config.convert_to_blocks:
+        data_before = data_processing.convert_to_blocks_util(
+            config.convert_to_blocks, data_before
+        )
+
     if config.apply_normalization:
         print("Normalizing...")
         data = normalize(data_before, config.custom_norm)
@@ -460,7 +502,7 @@ def compress(model_path, config):
         data = data_before
     number_of_columns = 0
     try:
-        print("compression ratio:", config.compression_ratio)
+        n_features = 0
         if config.data_dimension == 1:
             column_names = np.load(config.input_path)["names"]
             number_of_columns = len(column_names)
@@ -468,9 +510,16 @@ def compress(model_path, config):
                 number_of_columns / config.compression_ratio
             )
             config.number_of_columns = number_of_columns
+            n_features = number_of_columns
         elif config.data_dimension == 2:
-            number_of_rows = data.shape[1]
-            config.number_of_columns = data.shape[2]
+            if config.model_type == "dense":
+                number_of_rows = data.shape[1]
+                config.number_of_columns = data.shape[2]
+                n_features = number_of_rows * config.number_of_columns
+            else:
+                number_of_rows = original_shape[1]
+                config.number_of_columns = original_shape[2]
+                n_features = config.number_of_columns
             config.latent_space_size = ceil(
                 (number_of_rows * config.number_of_columns) / config.compression_ratio
             )
@@ -492,20 +541,11 @@ def compress(model_path, config):
     model = data_processing.load_model(
         model_object,
         model_path=model_path,
-        n_features=config.number_of_columns,
+        n_features=n_features,
         z_dim=config.latent_space_size,
     )
     model.eval()
 
-    # Give the encoding function the correct input as tensor
-    # if config.data_dimension == 2:
-    #     data_tensor = (
-    #         torch.from_numpy(data.astype("float32", casting="same_kind"))
-    #         .to(device)
-    #         .view(data.shape[0], 1, data.shape[1], data.shape[2])
-    #     )
-    # elif config.data_dimension == 1:
-    #     data_tensor = torch.from_numpy(data).to(device)
     if config.data_dimension == 2:
         if config.model_type == "convolutional" and config.model_name == "Conv_AE_3D":
             data_tensor = torch.tensor(data, dtype=torch.float32).view(
@@ -575,7 +615,14 @@ def compress(model_path, config):
 
 
 def decompress(
-    model_path, input_path, input_path_deltas, input_batch_index, model_name, config
+    model_path,
+    input_path,
+    input_path_deltas,
+    input_batch_index,
+    model_name,
+    config,
+    output_path,
+    original_shape,
 ):
     """Function which performs the decompression of the compressed file. In order to decompress, you must have a
     compressed file, whose path is determined by `input_path`, a model from path `model_path` and a model_name. The
@@ -598,6 +645,11 @@ def decompress(
     names = loaded["names"]
     normalization_features = loaded["normalization_features"]
 
+    if config.model_type == "convolutional":
+        final_layer_details = np.load(
+            os.path.join(output_path, "training", "final_layer.npy"), allow_pickle=True
+        )
+
     if config.save_error_bounded_deltas:
         loaded_deltas = np.load(
             gzip.GzipFile(input_path_deltas, "r"), allow_pickle=True
@@ -615,7 +667,7 @@ def decompress(
     bs = config.batch_size
     model_dict = torch.load(str(model_path), map_location=get_device())
     if config.data_dimension == 2 and config.model_type == "dense":
-        number_of_columns = int(np.sqrt(len(model_dict[list(model_dict.keys())[-1]])))
+        number_of_columns = int((len(model_dict[list(model_dict.keys())[-1]])))
     else:
         number_of_columns = len(model_dict[list(model_dict.keys())[-1]])
 
@@ -629,6 +681,9 @@ def decompress(
         z_dim=latent_space_size,
     )
     model.eval()
+
+    if config.model_type == "convolutional":
+        model.set_final_layer_dims(final_layer_details)
 
     # Load the data, convert to tensor and batch it to avoid memory leaks
     data_tensor = torch.from_numpy(data).to(device)
@@ -670,8 +725,9 @@ def decompress(
 
     if config.data_dimension == 2 and config.model_type == "dense":
         decompressed = decompressed.reshape(
-            (len(decompressed), number_of_columns, number_of_columns)
+            (len(decompressed), original_shape[1], original_shape[2])
         )
+
     return decompressed, names, normalization_features
 
 

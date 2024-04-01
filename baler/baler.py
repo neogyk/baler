@@ -24,6 +24,8 @@ import gzip
 from .modules.profiling import energy_profiling
 from .modules.profiling import pytorch_profile
 
+
+
 __all__ = (
     "perform_compression",
     "perform_decompression",
@@ -38,7 +40,7 @@ def main():
     """Calls different functions depending on argument parsed in command line.
 
         - if --mode=newProject: call `helper.create_new_project` and create a new project sub directory with config file
-        - if --mode=train: call `perform_training` and train the network on given data and based on the config file
+        - if --mode=train: call `perform_training` and train the network on given data and based on the config file and check if profilers are enabled
         - if --mode=compress: call `perform_compression` and compress the given data using the model trained in `--mode=train`
         - if --mode=decompress: call `perform_decompression` and decompress the compressed file outputted from `--mode=compress`
         - if --mode=plot: call `perform_plotting` and plot the comparison between the original data and the decompressed data from `--mode=decompress`. Also plots the loss plot from the trained network.
@@ -48,14 +50,20 @@ def main():
     Raises:
         NameError: Raises error if the chosen mode does not exist.
     """
-    config, mode, workspace_name, project_name, verbose = helper.get_arguments()
+    (
+        config,
+        mode,
+        workspace_name,
+        project_name,
+        verbose,
+    ) = helper.get_arguments()
     project_path = os.path.join("workspaces", workspace_name, project_name)
     output_path = os.path.join(project_path, "output")
 
     if mode == "newProject":
         helper.create_new_project(workspace_name, project_name, verbose)
     elif mode == "train":
-        perform_training(output_path, config, verbose)
+        perform_training(output_path=output_path, config=config, verbose=verbose)
     elif mode == "diagnose":
         perform_diagnostics(output_path, verbose)
     elif mode == "compress":
@@ -92,26 +100,41 @@ def perform_training(output_path, config, verbose: bool):
     Raises:
         NameError: Baler currently only supports 1D (e.g. HEP) or 2D (e.g. CFD) data as inputs.
     """
-    train_set_norm, test_set_norm, normalization_features = helper.process(
+    (
+        train_set_norm,
+        test_set_norm,
+        normalization_features,
+        original_shape,
+    ) = helper.process(
         config.input_path,
         config.custom_norm,
         config.test_size,
         config.apply_normalization,
+        config.convert_to_blocks if hasattr(config, "convert_to_blocks") else None,
+        verbose,
     )
 
     if verbose:
         print("Training and testing sets normalized")
 
     try:
+        n_features = 0
         if config.data_dimension == 1:
             number_of_columns = train_set_norm.shape[1]
             config.latent_space_size = ceil(
                 number_of_columns / config.compression_ratio
             )
             config.number_of_columns = number_of_columns
+            n_features = number_of_columns
         elif config.data_dimension == 2:
-            number_of_rows = train_set_norm.shape[1]
-            number_of_columns = train_set_norm.shape[2]
+            if config.model_type == "dense":
+                number_of_rows = train_set_norm.shape[1]
+                number_of_columns = train_set_norm.shape[2]
+                n_features = number_of_columns * number_of_rows
+            else:
+                number_of_rows = original_shape[1]
+                number_of_columns = original_shape[2]
+                n_features = number_of_columns
             config.latent_space_size = ceil(
                 (number_of_rows * number_of_columns) / config.compression_ratio
             )
@@ -129,14 +152,16 @@ def perform_training(output_path, config, verbose: bool):
         assert number_of_columns == config.number_of_columns
 
     if verbose:
-        print(f"Intitalizing Model with Latent Size - {config.latent_space_size}")
+        print(
+            f"Intitalizing Model with Latent Size - {config.latent_space_size} and Features - {n_features}"
+        )
 
     device = helper.get_device()
     if verbose:
         print(f"Device used for training: {device}")
 
     model_object = helper.model_init(config.model_name)
-    model = model_object(n_features=number_of_columns, z_dim=config.latent_space_size)
+    model = model_object(n_features=n_features, z_dim=config.latent_space_size)
     model.to(device)
 
     if config.model_name == "Conv_AE_3D" and hasattr(
@@ -167,13 +192,24 @@ def perform_training(output_path, config, verbose: bool):
             print(
                 f"Normalization features saved to {os.path.join(training_path, 'normalization_features.npy')}"
             )
-    helper.model_saver(
-        trained_model, os.path.join(output_path, "compressed_output", "model.pt")
-    )
+
+    if config.separate_model_saving:
+        helper.encoder_decoder_saver(
+            trained_model,
+            os.path.join(output_path, "compressed_output", "encoder.pt"),
+            os.path.join(output_path, "compressed_output", "decoder.pt"),
+        )
+    else:
+        helper.model_saver(
+            trained_model, os.path.join(output_path, "compressed_output", "model.pt")
+        )
     if verbose:
         print(
             f"Model saved to {os.path.join(output_path, 'compressed_output', 'model.pt')}"
         )
+
+        print("\nThe model has the following structure:")
+        print(model.type)
 
 
 def perform_diagnostics(project_path, verbose: bool):
@@ -231,16 +267,26 @@ def perform_compression(output_path, config, verbose: bool):
         normalization_features = np.load(
             os.path.join(output_path, "training", "normalization_features.npy")
         )
-
-    (
-        compressed,
-        error_bound_batch,
-        error_bound_deltas,
-        error_bound_index,
-    ) = helper.compress(
-        model_path=os.path.join(output_path, "compressed_output", "model.pt"),
-        config=config,
-    )
+    if config.separate_model_saving:
+        (
+            compressed,
+            error_bound_batch,
+            error_bound_deltas,
+            error_bound_index,
+        ) = helper.compress(
+            model_path=os.path.join(output_path, "compressed_output", "encoder.pt"),
+            config=config,
+        )
+    else:
+        (
+            compressed,
+            error_bound_batch,
+            error_bound_deltas,
+            error_bound_index,
+        ) = helper.compress(
+            model_path=os.path.join(output_path, "compressed_output", "model.pt"),
+            config=config,
+        )
 
     end = time.time()
 
@@ -312,20 +358,59 @@ def perform_decompression(output_path, config, verbose: bool):
 
     start = time.time()
     model_name = config.model_name
-    decompressed, names, normalization_features = helper.decompress(
-        model_path=os.path.join(output_path, "compressed_output", "model.pt"),
-        input_path=os.path.join(output_path, "compressed_output", "compressed.npz"),
-        input_path_deltas=os.path.join(
-            output_path, "compressed_output", "compressed_deltas.npz.gz"
-        ),
-        input_batch_index=os.path.join(
-            output_path, "compressed_output", "compressed_batch_index_metadata.npz.gz"
-        ),
-        model_name=model_name,
-        config=config,
-    )
+    data_before = np.load(config.input_path)["data"]
+    if config.separate_model_saving:
+        decompressed, names, normalization_features = helper.decompress(
+            model_path=os.path.join(output_path, "compressed_output", "decoder.pt"),
+            input_path=os.path.join(output_path, "compressed_output", "compressed.npz"),
+            input_path_deltas=os.path.join(
+                output_path, "compressed_output", "compressed_deltas.npz.gz"
+            ),
+            input_batch_index=os.path.join(
+                output_path,
+                "compressed_output",
+                "compressed_batch_index_metadata.npz.gz",
+            ),
+            model_name=model_name,
+            config=config,
+            output_path=output_path,
+            original_shape=data_before.shape,
+        )
+    else:
+        decompressed, names, normalization_features = helper.decompress(
+            model_path=os.path.join(output_path, "compressed_output", "model.pt"),
+            input_path=os.path.join(output_path, "compressed_output", "compressed.npz"),
+            input_path_deltas=os.path.join(
+                output_path, "compressed_output", "compressed_deltas.npz.gz"
+            ),
+            input_batch_index=os.path.join(
+                output_path,
+                "compressed_output",
+                "compressed_batch_index_metadata.npz.gz",
+            ),
+            model_name=model_name,
+            config=config,
+            output_path=output_path,
+            original_shape=data_before.shape,
+        )
     if verbose:
         print(f"Model used: {model_name}")
+
+    if hasattr(config, "convert_to_blocks") and config.convert_to_blocks:
+        print(
+            "Converting Blocked Data into Standard Format. Old Shape - ",
+            decompressed.shape,
+            "Target Shape - ",
+            data_before.shape,
+        )
+        if config.model_type == "dense":
+            decompressed = decompressed.reshape(
+                data_before.shape[0], data_before.shape[1], data_before.shape[2]
+            )
+        else:
+            decompressed = decompressed.reshape(
+                data_before.shape[0], 1, data_before.shape[1], data_before.shape[2]
+            )
 
     if config.apply_normalization:
         print("Un-normalizing...")

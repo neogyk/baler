@@ -245,7 +245,7 @@ def plot_1D(output_path: str, config):
             ax4.clear()
 
 
-def plot_2D(project_path, config):
+def plot_2D_old(project_path, config):
     """General plotting for 2D data, for example 2D arraysfrom computational fluid
         dynamics or other image like data. This function generates a pdf
         document where each page contains the before/after performance
@@ -365,6 +365,76 @@ def plot_2D(project_path, config):
     #         print(path)
     #         image = imageio.imread(path)
     #         writer.append_data(image)
+
+
+def plot_2D(project_path, config):
+    import sys
+
+    """General plotting for 2D data, for example 2D arraysfrom computational fluid
+        dynamics or other image like data. This function generates a pdf
+        document where each page contains the before/after performance
+        of each column of the 1D data
+
+    Args:
+        project_path (string): The path to the project directory
+        config (dataclass): The config class containing attributes set in the config file
+    """
+
+    data = np.load(config.input_path)["data"]
+    data_decompressed = np.load(project_path + "/decompressed_output/decompressed.npz")[
+        "data"
+    ]
+
+    if config.convert_to_blocks:
+        data_decompressed = data_decompressed.reshape(
+            data.shape[0], data.shape[1], data.shape[2]
+        )
+
+    if data.shape[0] > 1:
+        num_tiles = data.shape[0]
+    else:
+        num_tiles = 1
+
+    # if config.model_type == "convolutional" and config.model_name == "Conv_AE_3D":
+    #     data_decompressed = data_decompressed.reshape(
+    #         data_decompressed.shape[0] * data_decompressed.shape[2],
+    #         1,
+    #         data_decompressed.shape[3],
+    #         data_decompressed.shape[4],
+    #     )
+
+    print("=== Plotting ===")
+    for ind in trange(num_tiles):
+        # if config.model_type == "convolutional":
+        #     tile_data_decompressed = data_decompressed[ind][0]
+        # elif config.model_type == "dense":
+        #     tile_data_decompressed = data_decompressed[ind][0]
+        tile_data = data[ind]
+        tile_data_decompressed = data_decompressed[ind]
+
+        diff = tile_data - tile_data_decompressed
+
+        max_value = np.amax([np.amax(tile_data), np.amax(tile_data_decompressed)])
+        min_value = np.amin([np.amin(tile_data), np.amin(tile_data_decompressed)])
+
+        fig, axs = plt.subplots(
+            1, 3, figsize=(29.7 * (1 / 2.54), 10 * (1 / 2.54)), sharey=True
+        )
+        axs[0].set_title("Original", fontsize=11)
+        im1 = axs[0].imshow(tile_data, vmax=max_value, vmin=min_value)
+        axs[1].set_title("Reconstructed", fontsize=11)
+        im2 = axs[1].imshow(tile_data_decompressed, vmax=max_value, vmin=min_value)
+        axs[2].set_title("Difference", fontsize=11)
+        im3 = axs[2].imshow(diff, vmax=max_value, vmin=min_value)
+
+        fig.subplots_adjust(right=0.8)
+        cbar_ax = fig.add_axes([0.815, 0.2, 0.02, 0.59])
+        cb2 = fig.colorbar(im3, cax=cbar_ax, location="right", aspect=10)
+
+        fig.savefig(
+            project_path + "/plotting/CFD" + str(ind) + ".png", bbox_inches="tight"
+        )
+        # sys.exit()
 
 
 def plot(output_path, config):

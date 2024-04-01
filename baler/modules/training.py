@@ -15,6 +15,7 @@
 import os
 import random
 import time
+import sys
 
 import numpy as np
 import torch
@@ -24,10 +25,20 @@ from tqdm import tqdm
 from ..modules import diagnostics
 from ..modules import helper
 from ..modules import utils
+from torch.nn import functional as F
 
 
 def fit(
-    model, train_dl, model_children, regular_param, optimizer, RHO, l1, n_dimensions
+    config,
+    model,
+    train_dl,
+    model_children,
+    regular_param,
+    optimizer,
+    latent_dim,
+    RHO,
+    l1,
+    n_dimensions,
 ):
     """This function trains the model on the train set. It computes the losses and does the backwards propagation, and updates the optimizer as well.
     Args:
@@ -59,14 +70,23 @@ def fit(
         # Compute the predicted outputs from the input data
         reconstructions = model(inputs)
 
-        # Compute how far off the prediction is
-        loss, mse_loss, l1_loss = utils.mse_sum_loss_l1(
-            model_children=model_children,
-            true_data=inputs,
-            reconstructed_data=reconstructions,
-            reg_param=regular_param,
-            validate=True,
-        )
+        if (
+            hasattr(config, "custom_loss_function")
+            and config.custom_loss_function == "loss_function_swae"
+        ):
+            z = model.encode(inputs)
+            loss, mse_loss, l1_loss = utils.loss_function_swae(
+                inputs, z, reconstructions, latent_dim
+            )
+        else:
+            # Compute how far off the prediction is
+            loss, mse_loss, l1_loss = utils.mse_sum_loss_l1(
+                model_children=model_children,
+                true_data=inputs,
+                reconstructed_data=reconstructions,
+                reg_param=regular_param,
+                validate=True,
+            )
 
         # Compute the loss-gradient with
         loss.backward()
@@ -174,11 +194,14 @@ def train(model, variables, train_data, test_data, project_path, config):
     # Converting data to tensors
     if config.data_dimension == 2:
         if config.model_type == "dense":
+            # print(train_data.shape)
+            # print(test_data.shape)
+            # sys.exit()
             train_ds = torch.tensor(
                 train_data, dtype=torch.float32, device=device
             ).view(train_data.shape[0], train_data.shape[1] * train_data.shape[2])
             valid_ds = torch.tensor(test_data, dtype=torch.float32, device=device).view(
-                train_data.shape[0], train_data.shape[1] * train_data.shape[2]
+                test_data.shape[0], test_data.shape[1] * test_data.shape[2]
             )
         elif config.model_type == "convolutional" and config.model_name == "Conv_AE_3D":
             train_ds = torch.tensor(
@@ -268,16 +291,17 @@ def train(model, variables, train_data, test_data, project_path, config):
         print(f"Epoch {epoch + 1} of {epochs}")
 
         train_epoch_loss, mse_loss_fit, regularizer_loss_fit, trained_model = fit(
+            config=config,
             model=model,
             train_dl=train_dl,
             model_children=model_children,
-            optimizer=optimizer,
-            RHO=rho,
             regular_param=reg_param,
+            optimizer=optimizer,
+            latent_dim=latent_space_size,
+            RHO=rho,
             l1=l1,
             n_dimensions=config.data_dimension,
         )
-
         train_loss.append(train_epoch_loss)
 
         if test_size:
@@ -317,5 +341,9 @@ def train(model, variables, train_data, test_data, project_path, config):
     np.save(
         os.path.join(project_path, "loss_data.npy"), np.array([train_loss, val_loss])
     )
+
+    if config.model_type == "convolutional":
+        final_layer = model.get_final_layer_dims()
+        np.save(os.path.join(project_path, "final_layer.npy"), np.array(final_layer))
 
     return trained_model

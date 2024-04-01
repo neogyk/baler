@@ -23,6 +23,17 @@ from ..modules import helper
 from ..modules import models
 
 
+def convert_to_blocks_util(blocks, data):
+    print(
+        "Converted Dataset to Blocks of Size - ", blocks, " from original ", data.shape
+    )
+    blocks = np.array(blocks)
+    original_shape = np.array(data.shape)
+    total_size = np.prod(original_shape)
+    data = data.reshape((total_size // (blocks[1] * blocks[2])), blocks[1], blocks[2])
+    return data
+
+
 def save_model(model, model_path: str) -> None:
     """Saves the models state dictionary as a `.pt` file to the given path.
 
@@ -34,6 +45,32 @@ def save_model(model, model_path: str) -> None:
         None: Saved model state dictionary as `.pt` file.
     """
     torch.save(model.state_dict(), model_path)
+
+
+def encoder_saver(model, model_path: str) -> None:
+    """Saves the Encoder state dictionary as a `.pt` file to the given path
+
+    Args:
+        model (nn.Module): The PyTorch model to save.
+        model_path (str): String defining the models save path.
+
+    Returns:
+        None: Saved encoder state dictionary as `.pt` file.
+    """
+    torch.save(model.encoder.state_dict(), model_path)
+
+
+def decoder_saver(model, model_path: str) -> None:
+    """Saves the Decoder state dictionary as a `.pt` file to the given path
+
+    Args:
+        model (nn.Module): The PyTorch model to save.
+        model_path (str): String defining the models save path.
+
+    Returns:
+        None: Saved decoder state dictionary as `.pt` file.
+    """
+    torch.save(model.decoder.state_dict(), model_path)
 
 
 def initialise_model(model_name: str):
